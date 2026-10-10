@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NaïveProxy 客户端 — 交互原型 (naive-ui)</title>
+<!--
+  ══════════════════════════════════════════════════════════════════════
+  UI_SPEC §6 权威交互原型 · 已用 naive-ui 重写(与 src/ 实现同组件同主题)
+  ══════════════════════════════════════════════════════════════════════
+  打开方式:先在 naive-gui/ 执行 pnpm install,再用浏览器直接打开本文件
+           (脚本走 node_modules 相对路径,无需构建、无需起服务)。
+
+  技术栈:Vue 3 global build(含模板编译器) + naive-ui 2.45 UMD(window.naive)
+         模板写在 <script type="text/x-template"> 中 —— 浏览器不解析其内部
+         HTML,由 Vue 编译器处理,因此支持组件自闭合与 #slot 语法。
+
+  主题:n-config-provider 的 theme-overrides 与 src/App.vue 完全同源:
+        蓝 #2080f0 = 交互强调 / 绿 #18a058 = 连接与成功 / 红 #d03050 = 危险。
+
+  组件映射(原手写控件 → naive-ui):
+        .seg 协议分段      → n-radio-group + n-radio-button
+        .btn / .btn-sm     → n-button(default/secondary/primary/error/dashed/text)
+        .btn-icon          → n-button circle size=tiny
+        .switch            → n-switch
+        input/select       → n-input / n-input-number / n-select
+        .tabs              → n-tabs(type=line,suffix 槽放保存按钮)
+        .overlay + .modal  → n-modal(preset=card)
+        .toast             → createDiscreteApi(['message'])
+        .warnbar           → n-alert(warning / error)
+        折叠分组           → n-collapse + n-collapse-item
+        卡片               → n-card(size=small)
+
+  naive-ui 无对应组件、故保留自绘 CSS 的部分(与 src/ 实现一致):
+        呼吸状态点 .dot / .st-dot、日志终端 .log、延迟徽章 .lat/.latency、
+        黄色高敏感区 .sens-zone、侧栏 Profile 行 .profile。
+-->
+<style>
+  :root {
+    --bg: #101014; --panel: #18181c; --panel2: #232329; --border: #2a2a30;
+    --text: #ececef; --text-dim: #989ba3; --text-faint: #6b6e76;
+    --green: #18a058; --green-glow: rgba(24,160,88,.45);
+    --blue: #2080f0; --red: #d03050; --yellow: #f0a020;
+    --yellow-bg: rgba(240,160,32,.08); --yellow-border: rgba(240,160,32,.35);
+    --radius: 8px; --ctrl-h: 28px;
+    --sidebar-active: rgba(32,128,240,.16);
+    --log-bg: #0c0c10;
+    font-size: 13px;
+  }
+  html[data-theme="light"] {
+    --bg: #f7f8fa; --panel: #ffffff; --panel2: #eceef2; --border: #e0e0e6;
+    --text: #1f2329; --text-dim: #5f6368; --text-faint: #9aa0a8;
+    --green-glow: rgba(24,160,88,.3);
+    --sidebar-active: rgba(32,128,240,.12);
+    --log-bg: #f4f5f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Inter","SF Pro Text","HarmonyOS Sans SC","Microsoft YaHei",system-ui,sans-serif;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px;
+  }
+  .app { width: 980px; height: 660px; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+
+  /* ── TitleBar ── */
+  .titlebar { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .logo { width: 20px; height: 20px; border-radius: 6px; background: linear-gradient(135deg,#2080f0,#18a058);
+    display: inline-flex; align-items: center; justify-content: center; color: #fff;
+    font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .titlebar .name { font-weight: 600; }
+  .spacer { flex: 1; }
+
+  /* ── Body / Sidebar ── */
+  .body { flex: 1; display: flex; min-height: 0; }
+  .sidebar { width: 226px; border-right: 1px solid var(--border); display: flex;
+    flex-direction: column; flex-shrink: 0; background: var(--bg); }
+  .sidebar-head { padding: 12px 14px 6px; font-size: 11px; color: var(--text-faint); letter-spacing: .5px;
+    display: flex; justify-content: space-between; align-items: baseline; }
+  .drag-tip { font-size: 10px; opacity: .7; }
+  .profile-list { flex: 1; overflow-y: auto; padding-bottom: 4px; }
+  /* 两层结构与 src/components/ProfileSidebar.vue 一致:
+     外层 .profile-row 不可拖、承载 dragover/drop 与插入指示线;
+     内层 .profile 才是 draggable。
+     (原先这里还有一个 hover 显示的 ✕ 快捷删除按钮,已按用户要求移除 ——
+      删除统一走右键菜单,避免误点。两层结构仍保留:它承载 drop 指示线的定位。) */
+  .profile-row { position: relative; margin: 2px 8px; }
+  .profile-row.drop-before::before { content: ''; position: absolute; left: 0; right: 0; top: -3px;
+    height: 2px; background: var(--blue); border-radius: 1px; z-index: 1; }
+  .profile { display: flex; align-items: center; gap: 9px; padding: 8px 12px;
+    cursor: grab; border-radius: 7px; border: 1px solid transparent; user-select: none; }
+  .profile:active { cursor: grabbing; }
+  .profile:hover { background: var(--panel2); }
+  .profile.active { background: var(--sidebar-active); border-color: rgba(32,128,240,.4);
+    box-shadow: inset 2px 0 0 var(--blue); }
+  .profile.active .pname { color: var(--blue); font-weight: 600; }
+  .profile.dragging { opacity: .35; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  .dot.green { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
+  .dot.yellow { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.red { background: var(--red); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .meta { flex: 1; min-width: 0; }
+  .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phost { color: var(--text-dim); font-size: 11px; margin-top: 2px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
+  .lat { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+  .lat.good { color: var(--green); } .lat.mid { color: var(--yellow); } .lat.bad { color: var(--red); }
+  .sidebar-foot { padding: 10px 12px; display: flex; gap: 8px; border-top: 1px solid var(--border); }
+
+  /* ── Detail / n-tabs 适配 ──
+     踩坑记录:naive-ui 2.45 的内容容器类名既不是 .n-tabs-content,
+     而且 .n-tabs-pane-wrapper 仅在 :animated="true" 时才渲染(Tabs.mjs:859)。
+     本原型 animated=false,故 .n-tab-pane 是 .n-tabs 的直接子元素;
+     若不给它 flex:1 + min-height:0 + overflow-y:auto,pane 会按内容自然撑高
+     (实测 645px > detail 552px),底部的「高敏感操作」区便凸出压到状态栏上。
+     两条规则并存:animated 开/关都能正确滚动。 */
+  .detail { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .detail-tabs.n-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .detail-tabs .n-tabs-nav { padding: 0 16px; flex-shrink: 0; }
+  .detail-tabs .n-tabs-pane-wrapper { flex: 1; min-height: 0; overflow-y: auto; }
+  .detail-tabs .n-tab-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px !important; }
+  .verr { color: var(--red); margin-left: 3px; font-size: 11px; }
+
+  /* 只读遮罩(§3 状态矩阵:starting / running 锁定编辑) */
+  .ro { opacity: .5; pointer-events: none; }
+  .note-readonly { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; padding: 8px 12px;
+    background: var(--panel2); border: 1px dashed var(--border); border-radius: var(--radius);
+    color: var(--text-dim); font-size: 12px; }
+
+  /* ── 表单原语 ──
+     踩坑记录:必须用 `.field-row > label`(直接子元素)而不是 `.field-row label`。
+     naive-ui 的 n-radio-button 根元素本身就是 <label>(RadioButton.mjs:16),
+     后代选择器会连带命中它,把 width:52px / text-align:right / flex-shrink:0
+     强加到分段按钮上 —— 按钮被压成等宽 52px、内容区仅剩 ~24px,而"跟随系统"
+     四字需要 64px,配合 overflow:visible 便向右突出到按钮边框外。
+     手写 label 是 .field-row 的直接子元素,naive 的按钮嵌在 .n-radio-group 内,故 > 可精准区分。 */
+  .field-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .field-row:last-child { margin-bottom: 0; }
+  .field-row > label { width: 52px; color: var(--text-dim); text-align: right; flex-shrink: 0; font-size: 12.5px; }
+  .field-row > label.wide { width: 130px; }
+  .ct { font-size: 13.5px; font-weight: 600; letter-spacing: .2px; }
+  .ct-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+  .mb { margin-bottom: 14px; }
+  .mt { margin-top: 12px; }
+  .hint { font-size: 12px; color: var(--text-faint); }
+  .hint.err { color: var(--red); }
+  .note { font-size: 12px; color: var(--text-faint); margin-top: 12px; line-height: 1.75; }
+  .note b { color: var(--text-dim); }
+  .kbd { background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 5px; font-size: 11px; font-family: Consolas, monospace; }
+
+  /* 代理链 hop 行(§4.2 多跳) */
+  .hop { display: flex; align-items: center; gap: 8px; padding: 9px 0;
+    border-bottom: 1px dashed var(--border); }
+  .hop:last-of-type { border-bottom: none; }
+  .hop .idx { width: 56px; font-size: 11px; color: var(--text-faint); flex-shrink: 0; line-height: 1.5; }
+  .hop .idx .last { color: var(--green); font-size: 10px; }
+  .hop .idx .pre { color: var(--text-faint); font-size: 10px; }
+
+  /* 本地监听行(§5) */
+  .listen-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .pair-tag { font-size: 11px; color: var(--blue); background: rgba(32,128,240,.1);
+    padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
+
+  /* ── 诊断:日志终端(naive 无对应组件,自绘) ── */
+  .logbar { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
+  .logbar .ttl { font-weight: 600; margin-right: auto; font-size: 13px; }
+  .logbar .sub { color: var(--text-faint); font-weight: 400; font-size: 11px; }
+  .log { background: var(--log-bg); border: 1px solid var(--border); border-radius: var(--radius);
+    height: 208px; overflow-y: auto; padding: 10px 12px;
+    font-family: "Cascadia Code",Consolas,monospace; font-size: 12px; line-height: 1.75; }
+  .log .ts { color: var(--text-faint); margin-right: 8px; }
+  .log .ok { color: var(--green); }
+  .log .er { color: var(--red); }
+  .log .dim { color: var(--text-dim); }
+  .test-result { font-size: 12.5px; color: var(--text-dim); line-height: 1.95;
+    font-family: Consolas, monospace; }
+
+  /* 高敏感区(§11:黄底警示,操作需二次确认) */
+  .sens-zone { border: 1px solid var(--yellow-border); background: var(--yellow-bg);
+    border-radius: var(--radius); padding: 12px 14px; margin-top: 16px; }
+  .sens-zone h4 { color: var(--yellow); font-size: 12px; margin-bottom: 4px; }
+  .sens-zone .sz-note { font-size: 11.5px; color: var(--text-dim); margin-bottom: 10px; line-height: 1.6; }
+  .sens-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+  .sens-row:last-child { margin-bottom: 0; }
+  .sens-row .sk { flex-shrink: 0; font-weight: 500; width: 96px; }
+  .sens-row .desc { color: var(--text-dim); margin-right: auto; line-height: 1.5; }
+  .sens-row .desc .red { color: var(--red); }
+
+  /* ── StatusBar ── */
+  .statusbar { height: 62px; border-top: 1px solid var(--border); display: flex;
+    align-items: center; gap: 12px; padding: 0 18px; flex-shrink: 0; }
+  .st-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  .st-dot.green { background: var(--green); box-shadow: 0 0 10px var(--green-glow); }
+  .st-dot.yellow { background: var(--yellow); animation: pulse 1.2s infinite; }
+  .st-dot.red { background: var(--red); }
+  .st-text { font-weight: 600; flex-shrink: 0; }
+  .st-sub { font-size: 12px; color: var(--text-dim); font-family: Consolas, monospace;
+    max-width: 330px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .latency { padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;
+    visibility: hidden; flex-shrink: 0; }
+  .latency.show { visibility: visible; }
+  .latency.good { color: var(--green); background: rgba(24,160,88,.12); }
+  .latency.mid { color: var(--yellow); background: var(--yellow-bg); }
+  .latency.bad { color: var(--red); background: rgba(208,48,80,.12); }
+  .sysproxy-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px;
+    color: var(--text-dim); flex-shrink: 0; }
+
+  /* ── Modal 内部 ── */
+  .modal-row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+  .exit-row { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+  .modal-p { color: var(--text-dim); font-size: 12.5px; line-height: 1.8; margin-bottom: 10px; }
+  .modal-p .red { color: var(--red); font-weight: 600; }
+  .prev { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 12px; font-size: 12px; line-height: 1.95; margin-top: 10px;
+    font-family: Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  .prev b { color: var(--blue); font-family: inherit; }
+  .err { color: var(--red); font-size: 12px; margin-top: 8px; }
+  .ok-hint { color: var(--green); font-size: 12px; margin-top: 8px; }
+
+  /* ── 托盘菜单草图(§8.1) ── */
+  .tray-sketch { position: fixed; right: 32px; bottom: 32px; width: 210px; z-index: 50;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.5); overflow: hidden; }
+  .tray-sketch .ts-head { padding: 8px 12px; font-size: 11px; color: var(--text-faint);
+    border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; }
+  .tray-item { padding: 7px 12px; font-size: 12.5px; cursor: pointer; display: flex;
+    align-items: center; gap: 8px; }
+  .tray-item:hover { background: var(--panel2); }
+  .tray-item.disabled { color: var(--text-faint); cursor: default; }
+  .tray-item.disabled:hover { background: transparent; }
+  .tray-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="text/x-template" id="tpl-app">
+<div class="app">
+
+  <!-- ══════════ TitleBar ══════════ -->
+  <div class="titlebar">
+    <span class="logo">N</span>
+    <span class="name">NaïveProxy 客户端</span>
+    <n-tag size="small" round :bordered="false">naive v154.0.8037.49</n-tag>
+    <n-tag v-if="sysProxy" size="small" round :bordered="false" type="success">系统代理:开</n-tag>
+    <span class="spacer"></span>
+    <n-button quaternary circle size="small" title="托盘菜单草图" @click="showTray = !showTray">☰</n-button>
+    <n-button quaternary circle size="small" title="切换深/浅色" @click="toggleTheme">🌓</n-button>
+    <n-button quaternary circle size="small" title="设置" @click="showSettings = true">⚙</n-button>
+    <n-button quaternary circle size="small" title="关闭" @click="confirmExit">✕</n-button>
+  </div>
+
+  <div class="body">
+    <!-- ══════════ Sidebar ══════════ -->
+    <div class="sidebar">
+      <!-- ✕ 快捷删除已移除,右键成为侧栏唯一的改名/复制/删除入口 → 提示须告知,否则不可发现 -->
+      <div class="sidebar-head">配置档案 <span class="drag-tip">拖动排序 · 右键更多</span></div>
+      <div class="profile-list">
+        <div class="profile-row" v-for="(p, i) in profiles" :key="p.id"
+             :class="{ 'drop-before': overIndex === i && dragId !== null && dragId !== p.id }"
+             @dragover.prevent="onDragOver(i)" @drop.prevent="onDrop(i)" @dragleave="onDragLeave(i)"
+             @contextmenu.prevent="openCtx($event, p.id)">
+          <div class="profile" :class="{ active: p.id === current, dragging: dragId === p.id }"
+               draggable="true" @dragstart="dragId = p.id" @dragend="onDragEnd"
+               @click="switchProfile(p.id)">
+            <div class="dot" :class="p.id === current ? dotCls : ''"></div>
+            <div class="meta">
+              <div class="pname">{{ p.name }}</div>
+              <div class="phost">{{ p.host || '未设置服务器' }}</div>
+            </div>
+            <span class="lat" v-if="p.lat" :class="latCls(p.lat)">{{ p.lat }}ms</span>
+          </div>
+        </div>
+        <n-empty v-if="!profiles.length" description="还没有配置,点下方新建" size="small"
+                 style="margin:24px 0"></n-empty>
+      </div>
+      <div class="sidebar-foot">
+        <n-button size="small" secondary style="flex:1" @click="openImport">⤓ 导入链接</n-button>
+        <n-button size="small" secondary style="flex:1" @click="createProfile">＋ 新建</n-button>
+      </div>
+    </div>
+
+    <!-- ══════════ Detail:n-tabs ══════════ -->
+    <div class="detail">
+      <n-tabs v-model:value="activeTab" type="line" size="small" :animated="false"
+              class="detail-tabs" pane-style="padding:0">
+        <template #suffix>
+          <n-button size="tiny" :type="isDirty ? 'primary' : 'default'"
+                    :disabled="!isDirty" @click="save">
+            {{ isDirty ? '● 保存修改' : '已保存' }}
+          </n-button>
+        </template>
+
+        <!-- ────── Tab 1:服务器(UI_SPEC §4) ────── -->
+        <n-tab-pane name="server">
+          <template #tab>服务器<span v-if="tabErrs.server" class="verr">({{ tabErrs.server }})</span></template>
+          <div :class="{ ro: readonlyOn }">
+            <div class="note-readonly" v-if="readonlyOn">🔒 运行中 — 配置已锁定,停止连接后可修改</div>
+
+            <n-card size="small" class="mb" :bordered="true" content-style="padding:14px 16px">
+              <template #header><span class="ct">服务器</span></template>
+              <div class="field-row">
+                <label>协议</label>
+                <n-radio-group v-model:value="server.scheme" size="small">
+                  <n-radio-button v-for="s in schemes" :key="s" :value="s" :label="s"></n-radio-button>
+                </n-radio-group>
+                <span class="hint" v-if="server.scheme === 'quic'">HTTP/3 — 建议先做连通性测试</span>
+              </div>
+              <div class="field-row">
+                <label>地址</label>
+                <n-input v-model:value="server.host" size="small" placeholder="example.com"
+                         style="flex:1" :status="tabErrs.server ? 'error' : undefined"></n-input>
+                <n-input-number v-model:value="server.port" size="small" :show-button="false"
+                                :min="1" :max="65535" style="width:104px"></n-input-number>
+              </div>
+              <div class="field-row">
+                <label>认证</label>
+                <n-input v-model:value="server.user" size="small" placeholder="用户名"
+                         style="width:150px"></n-input>
+                <n-input v-model:value="server.pass" size="small" type="password"
+                         show-password-on="click" placeholder="密码" style="flex:1"></n-input>
+              </div>
+              <div class="hint err" v-if="tabErrs.server">V-P-02 服务器地址不能为空</div>
+            </n-card>
+
+            <n-card size="small" content-style="padding:14px 16px">
+              <template #header>
+                <div class="ct-row">
+                  <span class="ct">代理链</span>
+                  <span class="hint">多跳中转场景</span>
+                  <span class="spacer"></span>
+                  <n-switch v-model:value="chainOpen" size="small"></n-switch>
+                </div>
+              </template>
+
+              <template v-if="chainOpen">
+                <div class="hop" v-for="(h, i) in hops" :key="i">
+                  <span class="idx">
+                    跳 {{ i + 1 }}
+                    <div v-if="i === hops.length - 1" class="last">末跳 · Naive</div>
+                    <div v-else class="pre">前置代理</div>
+                  </span>
+                  <n-select v-model:value="h.scheme" size="small" :options="schemeOpts"
+                            style="width:98px"></n-select>
+                  <n-input v-model:value="h.host" size="small" placeholder="host"
+                           style="flex:1"></n-input>
+                  <n-input-number v-model:value="h.port" size="small" :show-button="false"
+                                  :min="1" :max="65535" style="width:98px"></n-input-number>
+                  <n-button size="tiny" quaternary @click="toast('认证编辑(原型演示)')">✎ 认证</n-button>
+                  <n-button size="tiny" circle :disabled="i === 0" title="上移"
+                            @click="moveHop(i, -1)">↑</n-button>
+                  <n-button size="tiny" circle :disabled="i === hops.length - 1" title="下移"
+                            @click="moveHop(i, 1)">↓</n-button>
+                  <n-button v-if="hops.length > 1" size="tiny" circle type="error"
+                            title="删除该跳" @click="hops.splice(i, 1)">✕</n-button>
+                </div>
+                <n-button size="small" dashed class="mt" @click="addHop">＋ 添加前置代理</n-button>
+                <div class="note">
+                  ⓘ 末跳自动协商 Naive padding;SOCKS 末跳无 padding;QUIC 跳不能排在 TCP 跳之后(V-P-04);链长 ≤ 3。
+                </div>
+              </template>
+              <div class="note" style="margin-top:0">
+                ⓘ 当前为单跳直连。打开开关后可编辑多跳代理链。
+              </div>
+            </n-card>
+          </div>
+        </n-tab-pane>
+
+        <!-- ────── Tab 2:本地监听(UI_SPEC §5) ────── -->
+        <n-tab-pane name="listen">
+          <template #tab>本地监听<span v-if="tabErrs.listen" class="verr">({{ tabErrs.listen }})</span></template>
+          <div :class="{ ro: readonlyOn }">
+            <div class="note-readonly" v-if="readonlyOn">🔒 运行中 — 配置已锁定,停止连接后可修改</div>
+
+            <n-card size="small" content-style="padding:14px 16px">
+              <template #header>
+                <div class="ct-row">
+                  <span class="ct">本地监听</span>
+                  <span class="spacer"></span>
+                  <n-button-group size="tiny">
+                    <n-button :type="tplOn === 'socks' ? 'primary' : 'default'"
+                              @click="applyTpl('socks')">socks</n-button>
+                    <n-button :type="tplOn === 'socks+http' ? 'primary' : 'default'"
+                              @click="applyTpl('socks+http')">socks+http</n-button>
+                    <n-button :type="tplOn === 'custom' ? 'primary' : 'default'"
+                              @click="applyTpl('custom')">自定义</n-button>
+                  </n-button-group>
+                </div>
+              </template>
+
+              <div class="listen-row" v-for="(l, i) in listen" :key="i">
+                <n-select v-model:value="l.proto" size="small" :options="protoOpts"
+                          style="width:104px"></n-select>
+                <n-select v-model:value="l.addr" size="small" :options="addrOpts"
+                          style="width:126px"></n-select>
+                <n-input-number v-model:value="l.port" size="small" :show-button="false"
+                                :min="1" :max="65535" style="width:106px"></n-input-number>
+                <span class="pair-tag" v-if="chainOpen && hops[i]">→ 链 {{ i + 1 }}</span>
+                <span class="spacer"></span>
+                <n-button size="tiny" circle type="error" title="删除此监听"
+                          :disabled="listen.length <= 1" @click="listen.splice(i, 1)">🗑</n-button>
+              </div>
+
+              <n-button size="small" dashed class="mt" @click="addListen">＋ 添加监听</n-button>
+
+              <n-alert v-if="portConflict" type="warning" :show-icon="true" :bordered="false" class="mt">
+                端口 {{ listen[0].port }} 与「服务器 B」的监听冲突 — 上次连接失败:
+                Failed to listen on socks://127.0.0.1:{{ listen[0].port }}
+              </n-alert>
+
+              <div class="note">
+                ⓘ <b>socks</b>:支持认证,应用兼容性最好;<b>http</b>:可设为系统代理(§10.1);
+                <b>redir</b>(仅 Linux)需配合 iptables。<br>
+                ⚠ 多代理链模式下,监听与链<b>按位置一一配对</b>(3 条链 ↔ 3 个监听,V-P-07)。
+              </div>
+            </n-card>
+          </div>
+        </n-tab-pane>
+        <!-- ────── Tab 3:高级(UI_SPEC §6) ────── -->
+        <n-tab-pane name="adv" tab="高级">
+          <div :class="{ ro: readonlyOn }">
+            <div class="note-readonly" v-if="readonlyOn">🔒 运行中 — 配置已锁定,停止连接后可修改</div>
+
+            <n-card size="small" class="mb" content-style="padding:14px 16px">
+              <template #header>
+                <div class="ct-row">
+                  <span class="ct">连接调优</span>
+                  <span class="hint">留空 = 使用 naive 默认值</span>
+                </div>
+              </template>
+              <div class="field-row">
+                <label class="wide">并发连接数</label>
+                <n-input-number v-model:value="adv.conc" size="small" placeholder="1"
+                                :show-button="false" :min="1" :max="64"
+                                style="width:160px"></n-input-number>
+                <span class="hint" v-if="!adv.conc">naive 默认 1(抗流量分析最强)</span>
+                <span class="hint" v-else>当前 {{ adv.conc }}</span>
+              </div>
+              <n-alert v-if="concLevel === 1" type="warning" :show-icon="true" :bordered="false">
+                多连接更易被流量分析识别,与 NaïveProxy 的设计目标相悖。建议 ≤ 4,优先尝试 2。
+              </n-alert>
+              <n-alert v-if="concLevel === 2" type="error" :show-icon="true" :bordered="false">
+                ⛔ 上游强烈建议不超过 4 个连接(USAGE.txt:86)。超过可能被服务端拒绝或明显削弱伪装效果。
+              </n-alert>
+
+              <div class="field-row mt">
+                <label class="wide">隧道轮换 (秒)</label>
+                <n-input-number v-model:value="adv.tunnel" size="small" placeholder="1800"
+                                :show-button="false" :min="1" style="width:160px"></n-input-number>
+                <span class="hint">会中断 SSH 等长连接</span>
+              </div>
+              <div class="field-row">
+                <label class="wide">空闲超时 (秒)</label>
+                <n-input-number v-model:value="adv.idle" size="small" placeholder="600"
+                                :show-button="false" :min="1" style="width:160px"></n-input-number>
+              </div>
+            </n-card>
+
+            <n-card size="small" content-style="padding:14px 16px">
+              <n-collapse>
+                <n-collapse-item name="http" title="HTTP 头 / 域名解析">
+                  <div>
+                    <div class="hint mb">进阶覆盖项;留空 = 不写入 config.json(§4.3)</div>
+                    <div class="field-row">
+                      <label class="wide">extra-header</label>
+                      <n-input v-model:value="adv.header" size="small" type="textarea" :autosize="{minRows:2,maxRows:4}"
+                               placeholder='{"Referer": "https://example.com"}' style="flex:1"></n-input>
+                    </div>
+                    <div class="field-row">
+                      <label class="wide">resolve-dns</label>
+                      <n-input v-model:value="adv.dns" size="small" placeholder="1.1.1.1:53"
+                               style="width:200px"></n-input>
+                      <span class="hint">默认使用系统 DNS</span>
+                    </div>
+                  </div>
+                </n-collapse-item>
+                <n-collapse-item name="pad" title="Naive Padding / 指纹">
+                  <div>
+                    <div class="field-row">
+                      <label class="wide">padding</label>
+                      <n-switch v-model:value="adv.padding" size="small"></n-switch>
+                      <span class="hint">默认开启,与真实 Chrome 指纹一致</span>
+                    </div>
+                    <div class="note" style="margin-top:6px">
+                      ⓘ 关闭 padding 会显著削弱伪装效果,仅在服务端明确不支持时关闭。
+                    </div>
+                  </div>
+                </n-collapse-item>
+                <n-collapse-item name="raw" title="原始 config.json(只读预览)">
+                  <div>
+                    <div class="prev">{{ previewJson }}</div>
+                  </div>
+                </n-collapse-item>
+              </n-collapse>
+            </n-card>
+          </div>
+        </n-tab-pane>
+
+        <!-- ────── Tab 4:诊断(UI_SPEC §7) ────── -->
+        <n-tab-pane name="diag" tab="诊断">
+          <n-card size="small" class="mb" content-style="padding:14px 16px">
+            <template #header>
+              <div class="ct-row">
+                <span class="ct">连通性测试</span>
+                <span class="spacer"></span>
+                <n-button size="small" type="primary" :loading="testing" :disabled="testing"
+                          @click="runTest">{{ testing ? '测试中…' : '▶ 开始测试' }}</n-button>
+              </div>
+            </template>
+            <div class="test-result" v-if="testLines.length">
+              <div v-for="(t, i) in testLines" :key="i">{{ t }}</div>
+            </div>
+            <div class="hint" v-else>
+              依次验证:二进制存在 → 配置可解析 → 端口可绑定 → 上游 TLS 握手 → 端到端 HTTPS 请求。
+            </div>
+          </n-card>
+
+          <div class="logbar">
+            <span class="ttl">运行日志 <span class="sub">naive stderr · 实时</span></span>
+            <n-button size="tiny" secondary @click="paused = !paused">
+              {{ paused ? '▶ 恢复滚动' : '⏸ 暂停滚动' }}
+            </n-button>
+            <n-button size="tiny" secondary @click="logs = []">清空</n-button>
+            <n-button size="tiny" secondary @click="toast('已复制到剪贴板(原型演示)')">⧉ 复制</n-button>
+          </div>
+          <div class="log" ref="logBox">
+            <div v-for="(l, i) in logs" :key="i">
+              <span class="ts">{{ l.ts }}</span><span :class="l.cls">{{ l.text }}</span>
+            </div>
+            <div v-if="!logs.length" class="dim">— 暂无日志 —</div>
+          </div>
+          <div class="note">
+            ⓘ naive 真实日志带前缀,如
+            <span class="kbd">[1009/100614.068:INFO:naive_proxy_bin.cc(479)] Listening on socks://127.0.0.1:3080</span>
+            — 就绪判定使用 <b>contains("Listening on ")</b> 而非 startsWith。
+          </div>
+
+          <!-- 高敏感区(§11) -->
+          <div class="sens-zone">
+            <h4>⚠ 高敏感操作</h4>
+            <div class="sz-note">以下操作会直接改变系统网络状态或销毁数据,均需二次确认。</div>
+            <div class="sens-row">
+              <span class="sk">系统代理</span>
+              <span class="desc">写入 Windows 系统代理设置。<span class="red">异常退出可能残留</span>,启动时自动清理。</span>
+              <n-button size="tiny" type="warning" secondary @click="sensConfirm('sysproxy')">设置</n-button>
+            </div>
+            <div class="sens-row">
+              <span class="sk">清理孤儿进程</span>
+              <span class="desc">强杀残留 naive.exe。<span class="red">可能误杀其它客户端的进程</span>。</span>
+              <n-button size="tiny" type="warning" secondary @click="sensConfirm('orphan')">清理</n-button>
+            </div>
+            <div class="sens-row">
+              <span class="sk">删除档案</span>
+              <span class="desc">删除「{{ currentName }}」及其全部配置。<span class="red">不可恢复</span>。</span>
+              <n-button size="tiny" type="error" secondary @click="sensConfirm('delete')">删除</n-button>
+            </div>
+            <div class="sens-row">
+              <span class="sk">重置全部设置</span>
+              <span class="desc">恢复出厂默认。<span class="red">所有档案将被清空</span>。</span>
+              <n-button size="tiny" type="error" secondary @click="sensConfirm('reset')">重置</n-button>
+            </div>
+          </div>
+        </n-tab-pane>
+      </n-tabs>
+    </div>
+  </div>
+
+  <!-- ══════════ StatusBar ══════════ -->
+  <div class="statusbar">
+    <div class="st-dot" :class="dotCls"></div>
+    <span class="st-text">{{ stateText }}</span>
+    <span class="st-sub">{{ stateSub }}</span>
+    <span class="latency" :class="[latCls(latency), latency ? 'show' : '']">{{ latency }} ms</span>
+    <span class="spacer"></span>
+    <div class="sysproxy-toggle">
+      <span>系统代理</span>
+      <n-switch v-model:value="sysProxy" size="small" :disabled="state !== 'running'"
+                @update:value="onSysProxy"></n-switch>
+    </div>
+    <n-button v-if="state === 'stopped' || state === 'idle'" size="small" type="primary"
+              @click="connect">▶ 连接</n-button>
+    <n-button v-else-if="state === 'starting'" size="small" type="warning" disabled loading>
+      连接中…
+    </n-button>
+    <n-button v-else-if="state === 'running'" size="small" type="error" secondary
+              @click="disconnect">■ 断开</n-button>
+    <n-button v-else-if="state === 'failed'" size="small" type="error" @click="connect">↻ 重试</n-button>
+  </div>
+
+  <!-- ══════════ 托盘菜单草图(§8.1) ══════════ -->
+  <div class="tray-sketch" v-if="showTray">
+    <div class="ts-head">
+      <span class="dot" :class="dotCls"></span> 托盘菜单 · {{ state === 'running' ? '● 运行中' : '○ 未连接' }}
+    </div>
+    <div class="tray-item" @click="showTray = false">🗗 显示主窗口</div>
+    <div class="tray-item" :class="{ disabled: state !== 'running' }"
+         @click="state === 'running' && (disconnect(), showTray = false)">■ 断开连接</div>
+    <div class="tray-sep"></div>
+    <div class="tray-item" v-for="p in profiles" :key="p.id"
+         @click="switchProfile(p.id); showTray = false">
+      <span class="dot" :class="p.id === current ? dotCls : ''"></span>{{ p.name }}
+    </div>
+    <div class="tray-sep"></div>
+    <div class="tray-item" @click="showTray = false; confirmExit()">✕ 退出</div>
+  </div>
+  <!-- ══════════ Modal:导入链接(§9) ══════════ -->
+  <n-modal v-model:show="showImport" preset="card" title="导入代理链接" style="width:520px"
+           :bordered="false" size="small">
+    <div class="modal-p">
+      粘贴 naiveproxy 分享链接(支持 <span class="kbd">naive+https://</span> /
+      <span class="kbd">naive+quic://</span> / 多个 <span class="kbd">proxy=</span> 参数表示代理链)。
+    </div>
+    <n-input v-model:value="importText" type="textarea" :autosize="{minRows:3,maxRows:6}"
+             placeholder="naive+https://user:pass@example.com:443"
+             style="font-family:Consolas,monospace; font-size:12px"></n-input>
+    <div class="err" v-if="importErr">{{ importErr }}</div>
+    <div class="prev" v-if="importPreview"><b>解析预览</b>
+{{ importPreview }}</div>
+    <div class="modal-row">
+      <n-button size="small" @click="showImport = false">取消</n-button>
+      <n-button size="small" type="primary" @click="doImport">导入</n-button>
+    </div>
+  </n-modal>
+
+  <!-- ══════════ 侧栏右键菜单(共享单例,manual + 绝对坐标定位) ══════════ -->
+  <n-dropdown trigger="manual" :show="ctxShow" :x="ctxX" :y="ctxY" :options="ctxOptions"
+              @select="onCtxSelect" @clickoutside="ctxShow = false"></n-dropdown>
+
+  <!-- ══════════ Modal:重命名档案(§8 名称输入,enter 确认) ══════════ -->
+  <n-modal v-model:show="showRename" preset="card" title="重命名档案" style="width:400px"
+           :bordered="false" size="small">
+    <n-input v-model:value="renameValue" placeholder="配置档案名称" size="medium"
+             :status="renameErr ? 'error' : undefined" @keyup.enter="doRename"></n-input>
+    <div class="err" v-if="renameErr">{{ renameErr }}</div>
+    <div class="modal-row">
+      <n-button size="small" @click="showRename = false">取消</n-button>
+      <n-button size="small" type="primary" @click="doRename">确定</n-button>
+    </div>
+  </n-modal>
+
+  <!-- ══════════ Modal:设置(§10) ══════════ -->
+  <n-modal v-model:show="showSettings" preset="card" title="设置" style="width:480px"
+           :bordered="false" size="small">
+    <div class="field-row">
+      <label class="wide">开机自启</label>
+      <n-switch v-model:value="settings.autostart" size="small"></n-switch>
+      <span class="hint">写入注册表 Run 键</span>
+    </div>
+    <div class="field-row">
+      <label class="wide">关闭时最小化到托盘</label>
+      <n-switch v-model:value="settings.minimizeToTray" size="small"></n-switch>
+      <span class="hint">关闭后 naive 继续运行</span>
+    </div>
+    <div class="field-row">
+      <label class="wide">连接时自动设系统代理</label>
+      <n-switch v-model:value="settings.setSystemProxyOnConnect" size="small"></n-switch>
+    </div>
+    <div class="field-row">
+      <label class="wide">naive 可执行文件</label>
+      <n-input v-model:value="settings.naiveBinaryPath" size="small"
+               placeholder="留空 = 使用内置" style="flex:1"></n-input>
+    </div>
+    <div class="field-row">
+      <label class="wide">主题</label>
+      <n-radio-group v-model:value="settings.theme" size="small" @update:value="applyTheme">
+        <n-radio-button value="dark" label="深色"></n-radio-button>
+        <n-radio-button value="light" label="浅色"></n-radio-button>
+        <n-radio-button value="system" label="跟随系统"></n-radio-button>
+      </n-radio-group>
+    </div>
+    <div class="modal-row">
+      <n-button size="small" @click="showSettings = false">取消</n-button>
+      <n-button size="small" type="primary" @click="saveSettings">保存设置</n-button>
+    </div>
+  </n-modal>
+
+  <!-- ══════════ Modal:高敏感操作二次确认(§11) ══════════ -->
+  <n-modal v-model:show="showSens" preset="card" :title="sensTitle" style="width:440px"
+           :bordered="false" size="small">
+    <n-alert type="warning" :show-icon="true" :bordered="false">
+      {{ sensBody }}
+    </n-alert>
+    <div class="modal-row">
+      <n-button size="small" @click="showSens = false">取消</n-button>
+      <n-button size="small" :type="sensDanger ? 'error' : 'warning'" @click="doSens">
+        我已知晓风险,继续
+      </n-button>
+    </div>
+  </n-modal>
+
+  <!-- ══════════ Modal:确认退出(§130 三按钮) ══════════ -->
+  <n-modal v-model:show="showExit" preset="card" title="退出确认" style="width:460px"
+           :bordered="false" size="small">
+    <template v-if="state === 'running'">
+      <div class="modal-p">
+        连接<span class="red">正在运行</span>。请选择退出方式:
+      </div>
+      <div class="exit-row">
+        <n-button size="small" @click="showExit = false">取消</n-button>
+        <div class="modal-row" style="margin-top:0">
+          <n-button size="small" secondary @click="exitMinimize">最小化到托盘</n-button>
+          <n-button size="small" type="error" @click="exitStop">停止连接并退出</n-button>
+        </div>
+      </div>
+    </template>
+    <template v-else>
+      <div class="modal-p">确定要退出 NaïveProxy 客户端吗?</div>
+      <div class="modal-row">
+        <n-button size="small" @click="showExit = false">取消</n-button>
+        <n-button size="small" type="error" @click="exitStop">退出</n-button>
+      </div>
+    </template>
+  </n-modal>
+
+</div>
+</script>
+<script src="./node_modules/vue/dist/vue.global.prod.js"></script>
+<script src="./node_modules/naive-ui/dist/index.prod.js"></script>
+<script>
+(function () {
+  const { createApp, ref, reactive, computed, watch, nextTick, h } = Vue;
+  const N = window.naive;
+
+  /* ── 主题:与 src/App.vue 的 themeOverrides 完全同源 ── */
+  const OVERRIDES = {
+    common: {
+      primaryColor: "#18a058",
+      primaryColorHover: "#36ad6a",
+      primaryColorPressed: "#0c7a43",
+      borderRadius: "6px",
+    },
+    dark: {
+      bodyColor: "#101014", cardColor: "#18181c", modalColor: "#18181c", popoverColor: "#232329",
+      inputColor: "#232329", actionColor: "#232329",
+      borderColor: "#2a2a30", dividerColor: "#2a2a30",
+    },
+    light: {
+      bodyColor: "#f7f8fa", cardColor: "#ffffff", modalColor: "#ffffff", popoverColor: "#ffffff",
+      inputColor: "#f4f5f7", actionColor: "#eceef2",
+      borderColor: "#e0e0e6", dividerColor: "#e0e0e6",
+    },
+  };
+  const themeMode = ref("dark");                       // 模块级:外层 provider 与内层组件共享
+  watch(themeMode, (v) => { document.documentElement.dataset.theme = v; }, { immediate: true });
+
+  /* 外层:只提供主题 + message 环境。内层才是真正的原型界面,
+     这样 useMessage() 弹出的提示也会跟随深/浅色主题。 */
+  const Outer = {
+    setup() {
+      const naiveTheme = computed(() => (themeMode.value === "light" ? null : N.darkTheme));
+      return () => h(N.NConfigProvider, { theme: naiveTheme.value, themeOverrides: OVERRIDES },
+        { default: () => h(N.NMessageProvider, null, { default: () => h(Inner) }) });
+    },
+  };
+
+  const Inner = {
+    template: "#tpl-app",
+    setup() {
+      const msg = N.useMessage();
+      const toast = (t, type = "info") => msg[type](t, { duration: 2200 });
+
+      /* ── 静态选项 ── */
+      const schemes = ["https", "quic", "http", "socks"];
+      const schemeOpts = schemes.map((s) => ({ label: s, value: s }));
+      const protoOpts = [
+        { label: "socks", value: "socks" }, { label: "http", value: "http" },
+        { label: "redir", value: "redir" },
+      ];
+      const addrOpts = [
+        { label: "127.0.0.1", value: "127.0.0.1" }, { label: "0.0.0.0", value: "0.0.0.0" },
+        { label: "[::1]", value: "[::1]" },
+      ];
+
+      /* ── 档案 ──
+         注意区分两种端口(§4/§5):
+           port       = 远端服务器端口(写进 proxy=)
+           listenPort = 该档案的本地监听端口(写进 listen=)
+         默认数据刻意让三者互不冲突,以保证「连接」成功路径可直接演示;
+         把监听端口手改成 3080 即可复现与「服务器 B」的冲突警告(§5)。 */
+      const profiles = reactive([
+        { id: "demo", name: "demo", host: "example.com", port: 443, listenPort: 1080, lat: 168 },
+        { id: "srvb", name: "服务器 B", host: "b.example.com", port: 443, listenPort: 3080, lat: 412 },
+        { id: "test", name: "测试节点", host: "", port: 443, listenPort: 8080, lat: 0 },
+      ]);
+      const current = ref("demo");
+      const currentName = computed(() => (profiles.find((p) => p.id === current.value) || {}).name || "");
+
+      /* ── 可编辑配置 ── */
+      const server = reactive({ scheme: "https", host: "example.com", port: 443, user: "admin", pass: "REDACTED" });
+      const chainOpen = ref(false);
+      const hops = reactive([{ scheme: "https", host: "relay.example.com", port: 443 }]);
+      const listen = reactive([{ proto: "socks", addr: "127.0.0.1", port: 1080 }]);
+      const adv = reactive({ conc: null, tunnel: null, idle: null, header: "", dns: "", padding: true });
+      const settings = reactive({
+        autostart: false, minimizeToTray: true, setSystemProxyOnConnect: false,
+        naiveBinaryPath: "", theme: "dark",
+      });
+
+      /* ── 运行状态机(§3) ── */
+      const state = ref("idle");        // idle | starting | running | failed | stopping
+      const stopReason = ref("");
+      const latency = ref(0);
+      const sysProxy = ref(false);
+      const showTray = ref(false);
+      /* 支持 URL hash 深链:#server / #listen / #adv / #diag —— 便于直接跳到某个 Tab 审阅 */
+      const TABS = ["server", "listen", "adv", "diag"];
+      const hashTab = (window.location.hash || "").replace("#", "");
+      const activeTab = ref(TABS.includes(hashTab) ? hashTab : "server");
+
+      const dotCls = computed(() => ({
+        idle: "", starting: "yellow", running: "green", failed: "red", stopping: "yellow",
+      }[state.value]));
+      const stateText = computed(() => ({
+        idle: "未连接", starting: "正在连接…", running: "已连接",
+        failed: "连接失败", stopping: "正在断开…",
+      }[state.value]));
+      const stateSub = computed(() => {
+        if (state.value === "failed") return stopReason.value;
+        if (state.value === "running") {
+          return listen.map((l) => `${l.proto}://${l.addr}:${l.port}`).join("  ");
+        }
+        return `${currentName.value} · ${server.scheme}://${server.host}:${server.port}`;
+      });
+      const readonlyOn = computed(() => ["starting", "running", "stopping"].includes(state.value));
+      const latCls = (v) => (v && v < 200 ? "good" : v && v < 400 ? "mid" : v ? "bad" : "");
+
+      /* ── 校验(§4.4) ── */
+      const tabErrs = computed(() => {
+        const s = [];
+        if (!server.host.trim()) s.push("V-P-02");
+        if (chainOpen.value && hops.some((x) => !x.host.trim())) s.push("V-P-03");
+        const l = [];
+        if (listen.some((x) => !x.port)) l.push("V-L-01");
+        const ports = listen.map((x) => `${x.addr}:${x.port}`);
+        if (new Set(ports).size !== ports.length) l.push("V-L-02");
+        if (chainOpen.value && listen.length !== hops.length) l.push("V-P-07");
+        return { server: s.length, listen: l.length };
+      });
+      const portConflict = computed(() =>
+        listen[0] && profiles.some((p) => p.id !== current.value && p.listenPort === listen[0].port));
+      const concLevel = computed(() => (!adv.conc ? 0 : adv.conc > 4 ? 2 : adv.conc > 1 ? 1 : 0));
+
+      /* ── 脏标记 ── */
+      const isDirty = ref(false);
+      let armed = false;
+      watch([server, adv, listen, hops, chainOpen], () => { if (armed) isDirty.value = true; },
+        { deep: true });
+      nextTick(() => { armed = true; });
+      const save = () => { isDirty.value = false; toast("已保存 " + currentName.value, "success"); };
+
+      /* ── config.json 预览(纯函数渲染,与 src/core/config.ts 同构) ── */
+      const previewJson = computed(() => {
+        const chain = chainOpen.value ? hops : [{ scheme: server.scheme, host: server.host, port: server.port }];
+        const proxy = chain.map((x, i) => {
+          const auth = i === chain.length - 1 && server.user ? `${server.user}:${server.pass}@` : "";
+          return `${x.scheme}://${auth}${x.host}:${x.port}`;
+        }).join(",");
+        const o = {
+          listen: listen.map((l) => `${l.proto}://${l.addr}:${l.port}`),
+          proxy,
+        };
+        if (adv.conc) o["max-connections"] = adv.conc;
+        if (adv.tunnel) o["tunnel-rotation-secs"] = adv.tunnel;
+        if (adv.idle) o["idle-timeout-secs"] = adv.idle;
+        if (adv.dns) o["resolve-dns"] = adv.dns;
+        o.log = "";
+        return JSON.stringify(o, null, 2);
+      });
+
+      /* ── 日志终端 ── */
+      const logs = reactive([]);
+      const paused = ref(false);
+      const logBox = ref(null);
+      const PFX = "[1009/061406.068:INFO:naive_proxy_bin.cc(479)] ";
+      const pushLog = (text, cls = "") => {
+        const d = new Date();
+        const ts = String(d.getHours()).padStart(2, "0") + ":" +
+          String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+        logs.push({ ts, text, cls });
+        if (logs.length > 300) logs.shift();
+        if (!paused.value) {
+          nextTick(() => { if (logBox.value) logBox.value.scrollTop = logBox.value.scrollHeight; });
+        }
+      };
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      /* ── 连接 / 断开模拟 ── */
+      async function connect() {
+        if (tabErrs.value.server || tabErrs.value.listen) {
+          state.value = "failed";
+          stopReason.value = "配置校验未通过,请修正标红的 Tab";
+          toast("配置校验未通过", "error");
+          return;
+        }
+        if (portConflict.value) {
+          state.value = "failed";
+          stopReason.value = `本地监听端口 ${listen[0].addr}:${listen[0].port} 已被占用`;
+          pushLog(PFX + `Failed to listen on socks://${listen[0].addr}:${listen[0].port}`, "er");
+          toast(stopReason.value, "error");
+          return;
+        }
+        state.value = "starting";
+        latency.value = 0;
+        pushLog("── 启动 naive ──", "dim");
+        pushLog(`config.json 已写入 runtime/current/(proxy=${server.scheme}://${server.host}:${server.port})`, "dim");
+        await wait(420);
+        pushLog(PFX + "Using naive crypto, padding enabled", "dim");
+        await wait(380);
+        for (const l of listen) pushLog(PFX + `Listening on ${l.proto}://${l.addr}:${l.port}`, "ok");
+        await wait(300);
+        state.value = "running";
+        const p = profiles.find((x) => x.id === current.value);
+        latency.value = p && p.lat ? p.lat : 180;
+        if (p) p.lat = latency.value;
+        pushLog(`state → running(pid 41288,就绪判定:contains("Listening on "))`, "ok");
+        if (settings.setSystemProxyOnConnect) { sysProxy.value = true; pushLog("已写入系统代理", "dim"); }
+        toast("已连接", "success");
+      }
+      async function disconnect() {
+        state.value = "stopping";
+        pushLog("── 用户请求停止 ──", "dim");
+        await wait(360);
+        if (sysProxy.value) { sysProxy.value = false; pushLog("已清理系统代理", "dim"); }
+        pushLog("state → stopped(user)", "dim");
+        state.value = "idle";
+        latency.value = 0;
+        toast("已断开", "info");
+      }
+      function onSysProxy(v) {
+        pushLog(v ? "已设置系统代理 → 127.0.0.1:" + listen[0].port : "已清除系统代理", v ? "ok" : "dim");
+        toast(v ? "系统代理已开启" : "系统代理已关闭", v ? "success" : "info");
+      }
+
+      /* ── 连通性测试(§7) ── */
+      const testing = ref(false);
+      const testLines = reactive([]);
+      async function runTest() {
+        testing.value = true;
+        testLines.splice(0);
+        const steps = [
+          ["✔ 二进制存在", "naive.exe (v154.0.8037.49)", "ok"],
+          ["✔ 配置可解析", `proxy=${server.scheme}://${server.host}:${server.port}`, "ok"],
+          ["✔ 端口可绑定", listen.map((l) => `${l.addr}:${l.port}`).join(", "), "ok"],
+          ["✔ 上游 TLS 握手", "证书链有效,SNI 一致", "ok"],
+          ["✓ 端到端 HTTPS", "https://www.gstatic.com/generate_204 → 204", "ok"],
+        ];
+        for (const [a, b] of steps) { await wait(340); testLines.push(`${a}   ${b}`); }
+        await wait(200);
+        testLines.push(`总耗时 1.7s · 延迟 ${latency.value || 168}ms`);
+        testing.value = false;
+        toast("全部检查通过", "success");
+      }
+
+      /* ── 本地监听模板(§5) ── */
+      const tplOn = computed(() => {
+        const s = JSON.stringify(listen);
+        if (s === JSON.stringify([{ proto: "socks", addr: "127.0.0.1", port: listen[0] ? listen[0].port : 1080 }])) return "socks";
+        if (listen.length === 2 && listen[0].proto === "socks" && listen[1].proto === "http") return "socks+http";
+        return "custom";
+      });
+      function applyTpl(kind) {
+        if (kind === "socks") listen.splice(0, listen.length, { proto: "socks", addr: "127.0.0.1", port: 1080 });
+        else if (kind === "socks+http") listen.splice(0, listen.length,
+          { proto: "socks", addr: "127.0.0.1", port: 1080 },
+          { proto: "http", addr: "127.0.0.1", port: 8080 });
+        else { toast("已切换为自定义,可自由增删监听", "info"); return; }
+        toast("已应用模板:" + kind, "success");
+      }
+      const addListen = () => listen.push({ proto: "http", addr: "127.0.0.1", port: 8080 });
+
+      /* ── 代理链 ── */
+      const addHop = () => {
+        if (hops.length >= 3) { toast("代理链最多 3 跳", "warning"); return; }
+        hops.splice(hops.length - 1, 0, { scheme: "https", host: "", port: 443 });
+      };
+      function moveHop(i, d) {
+        const j = i + d;
+        if (j < 0 || j >= hops.length) return;
+        const t = hops[i]; hops[i] = hops[j]; hops[j] = t;
+      }
+
+      /* ── 档案操作 ── */
+      function switchProfile(id) {
+        if (id === current.value) return;
+        if (isDirty.value) { toast("有未保存修改,已自动保存", "info"); isDirty.value = false; }
+        current.value = id;
+        const p = profiles.find((x) => x.id === id);
+        server.host = p.host; server.port = p.port;
+        listen[0].port = p.listenPort || 1080;
+        latency.value = state.value === "running" ? p.lat : 0;
+        pushLog(`切换档案 → ${p.name}`, "dim");
+      }
+      function createProfile() {
+        const id = "p" + Date.now();
+        profiles.push({ id, name: "新档案 " + (profiles.length + 1), host: "", port: 443,
+          listenPort: listen[0] ? listen[0].port : 1080, lat: 0 });
+        current.value = id;
+        server.host = ""; server.port = 443;
+        activeTab.value = "server";
+        toast("已创建,请填写服务器地址", "success");
+      }
+
+      /* ── HTML5 原生拖拽排序(与 src/stores/profiles.ts 的 reorder 同语义) ──
+         dragId=被拖档案 id;overIndex=当前悬停的目标索引,用于画插入指示线。 */
+      const dragId = ref(null);
+      const overIndex = ref(null);
+      const onDragOver = (i) => { overIndex.value = i; };
+      const onDragLeave = (i) => { if (overIndex.value === i) overIndex.value = null; };
+      function onDragEnd() { dragId.value = null; overIndex.value = null; }
+      function onDrop(toIndex) {
+        const fromId = dragId.value;
+        if (fromId) {
+          const from = profiles.findIndex((p) => p.id === fromId);
+          if (from >= 0 && from !== toIndex) {
+            const [moved] = profiles.splice(from, 1);
+            profiles.splice(toIndex, 0, moved);
+            pushLog(`档案排序:${moved.name} → 位置 ${toIndex + 1}`, "dim");
+          }
+        }
+        onDragEnd();
+      }
+
+      /* ── 侧栏右键菜单(UI_SPEC §8「新建/重命名 | 侧栏 +/右键」) ──
+         用 trigger="manual" + 绝对坐标定位的**共享** n-dropdown。Popover 内部是 vueuc 的
+         VBinder/VTarget(renderless),manual 模式下更不渲染 trigger 包裹元素,故 .profile-row
+         的两层拖拽结构与 drop-before 定位完全不受影响。 */
+      const ctxShow = ref(false);
+      const ctxX = ref(0);
+      const ctxY = ref(0);
+      const ctxTargetId = ref(null);
+      const ctxOptions = [
+        { label: "重命名", key: "rename" },
+        { label: "复制档案", key: "duplicate" },
+        { type: "divider", key: "d1" },
+        { label: "删除", key: "delete" },
+      ];
+      function openCtx(e, id) {
+        ctxTargetId.value = id;
+        ctxX.value = e.clientX;
+        ctxY.value = e.clientY;
+        ctxShow.value = true;
+      }
+      function onCtxSelect(key) {
+        ctxShow.value = false;
+        const id = ctxTargetId.value;
+        if (key === "rename") openRename(id);
+        else if (key === "duplicate") duplicateProfile(id);
+        else if (key === "delete") sensConfirm("delete", id);
+      }
+
+      /* ── 重命名 modal(UI_SPEC §8:名称输入,enter 确认) ── */
+      const showRename = ref(false);
+      const renameId = ref(null);
+      const renameValue = ref("");
+      const renameErr = ref("");
+      function openRename(id) {
+        const p = profiles.find((x) => x.id === id);
+        if (!p) return;
+        renameId.value = id;
+        renameValue.value = p.name;
+        renameErr.value = "";
+        showRename.value = true;
+      }
+      function doRename() {
+        const p = profiles.find((x) => x.id === renameId.value);
+        if (!p) { showRename.value = false; return; }
+        const name = renameValue.value.trim();
+        if (!name) { renameErr.value = "名称不能为空"; return; }
+        if (profiles.some((x) => x.id !== p.id && x.name === name)) { renameErr.value = "已存在同名档案"; return; }
+        if (name !== p.name) {
+          const old = p.name;
+          p.name = name;
+          if (p.id === current.value) isDirty.value = true; // isDirty 的 watch 不含档案名,改名须手动标脏
+          pushLog(`重命名档案:${old} → ${name}`, "dim");
+          toast("已重命名为「" + name + "」", "success");
+        }
+        showRename.value = false;
+      }
+
+      /* ── 复制档案(与 src/stores/profiles.ts 的 duplicate 同语义) ── */
+      function duplicateProfile(id) {
+        const p = profiles.find((x) => x.id === id);
+        if (!p) return;
+        const base = p.name + " 副本";
+        let n = base, k = 2;
+        while (profiles.some((x) => x.name === n)) n = base + " " + k++;
+        profiles.splice(profiles.findIndex((x) => x.id === id) + 1, 0, { ...p, id: "p" + Date.now(), name: n, lat: 0 });
+        pushLog(`复制档案:${p.name} → ${n}`, "dim");
+        toast("已复制为「" + n + "」", "success");
+      }
+
+      /* ── 导入链接(§9) ── */
+      const showImport = ref(false);
+      const importText = ref("");
+      const importErr = ref("");
+      function openImport() { importText.value = ""; importErr.value = ""; showImport.value = true; }
+      const importPreview = computed(() => {
+        const t = importText.value.trim();
+        if (!t) return "";
+        const m = t.match(/^naive\+(https|quic|http|socks):\/\/(?:([^:@/]*):([^@]*)@)?([^:/?]+)(?::(\d+))?/);
+        if (!m) return "";
+        return JSON.stringify({
+          listen: ["socks://127.0.0.1:1080"],
+          proxy: `${m[1]}://${m[2] ? m[2] + ":***@" : ""}${m[4]}:${m[5] || (m[1] === "socks" ? 1080 : 443)}`,
+          log: "",
+        }, null, 2);
+      });
+      function doImport() {
+        const t = importText.value.trim();
+        if (!t) { importErr.value = "请粘贴链接"; return; }
+        if (!importPreview.value) { importErr.value = "无法解析:需以 naive+https:// 等形式开头"; return; }
+        const m = t.match(/^naive\+(https|quic|http|socks):\/\/(?:([^:@/]*):([^@]*)@)?([^:/?]+)(?::(\d+))?/);
+        const id = "p" + Date.now();
+        profiles.push({ id, name: m[4], host: m[4], port: Number(m[5] || 443),
+          listenPort: listen[0] ? listen[0].port : 1080, lat: 0 });
+        current.value = id;
+        server.scheme = m[1]; server.host = m[4]; server.port = Number(m[5] || 443);
+        server.user = m[2] || ""; server.pass = m[3] || "";
+        showImport.value = false;
+        toast("已导入 " + m[4], "success");
+        pushLog(`导入档案 → ${m[4]} (${m[1]})`, "ok");
+      }
+
+      /* ── 设置 ── */
+      const showSettings = ref(false);
+      const applyTheme = (v) => { themeMode.value = v === "system"
+        ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : v; };
+      function saveSettings() {
+        applyTheme(settings.theme);
+        showSettings.value = false;
+        toast("设置已保存", "success");
+      }
+      const toggleTheme = () => {
+        const next = themeMode.value === "dark" ? "light" : "dark";
+        themeMode.value = next; settings.theme = next;
+      };
+
+      /* ── 高敏感操作二次确认(§11) ── */
+      const showSens = ref(false);
+      const sensKind = ref("");
+      const SENS = {
+        sysproxy: { t: "设置系统代理", d: false,
+          b: "将写入 Windows 系统代理设置(127.0.0.1:" + (listen[0] ? listen[0].port : 1080) + ")。所有应用的流量都会经过本代理;若程序异常退出可能残留,启动时会自动清理。" },
+        orphan: { t: "清理孤儿 naive 进程", d: false,
+          b: "将强制结束所有残留的 naive.exe 进程。如果你同时运行了其它 naive 客户端,它们的连接也会被中断。" },
+        delete: { t: "删除配置档案", d: true,
+          b: () => "将永久删除档案「" + (sensTargetName.value || currentName.value) + "」及其全部配置(服务器、认证、监听、高级选项)。此操作不可恢复。" },
+        reset: { t: "重置全部设置", d: true,
+          b: () => "将清空所有档案与设置并恢复出厂默认。此操作不可恢复。" },
+      };
+      const sensTitle = computed(() => (SENS[sensKind.value] || {}).t || "");
+      const sensBody = computed(() => {
+        const e = SENS[sensKind.value];
+        if (!e) return "";
+        return typeof e.b === "function" ? e.b() : e.b;
+      });
+      const sensDanger = computed(() => !!(SENS[sensKind.value] || {}).d);
+      // 行内 ✕ 会指定要删的档案;敏感区里的「删除档案」按钮针对当前档案(sensTarget=null)
+      const sensTarget = ref(null);
+      const sensTargetName = computed(() => {
+        const p = profiles.find((x) => x.id === sensTarget.value);
+        return p ? p.name : "";
+      });
+      function sensConfirm(kind, id = null) {
+        sensKind.value = kind;
+        sensTarget.value = id;
+        showSens.value = true;
+      }
+      function doSens() {
+        const k = sensKind.value;
+        const targetId = sensTarget.value || current.value;
+        showSens.value = false;
+        if (k === "sysproxy") { sysProxy.value = true; pushLog("已写入系统代理(高敏感操作)", "ok"); toast("系统代理已开启", "success"); }
+        else if (k === "orphan") { pushLog("taskkill /IM naive.exe /F → 已结束 1 个孤儿进程", "dim"); toast("已清理 1 个孤儿进程", "success"); }
+        else if (k === "delete") {
+          const i = profiles.findIndex((p) => p.id === targetId);
+          if (i >= 0) { const n = profiles[i].name; profiles.splice(i, 1);
+            if (current.value === targetId && profiles.length) current.value = profiles[Math.max(0, i - 1)].id;
+            pushLog(`删除档案 → ${n}`, "dim");
+            toast("已删除 " + n, "success"); }
+        } else if (k === "reset") { toast("已恢复出厂设置(原型演示)", "success"); }
+        sensTarget.value = null;
+      }
+
+      /* ── 退出(§130 三按钮) ── */
+      const showExit = ref(false);
+      const confirmExit = () => { showExit.value = true; };
+      function exitMinimize() {
+        showExit.value = false;
+        toast("已最小化到托盘,naive 继续运行", "info");
+        pushLog("窗口隐藏 → 托盘(naive 保持运行)", "dim");
+      }
+      async function exitStop() {
+        showExit.value = false;
+        if (state.value === "running" || state.value === "starting") await disconnect();
+        pushLog("quit_app:停止 Manager → 清理系统代理 → app.exit(0)", "dim");
+        toast("已退出(原型演示)", "success");
+      }
+
+      /* ── 初始化 ── */
+      pushLog("NaïveProxy 客户端原型 · naive-ui 版", "dim");
+      pushLog("state → idle(点击右下角「▶ 连接」体验状态机)", "dim");
+
+      return {
+        schemes, schemeOpts, protoOpts, addrOpts,
+        profiles, current, currentName, server, chainOpen, hops, listen, adv, settings,
+        state, stopReason, latency, sysProxy, showTray, activeTab,
+        dotCls, stateText, stateSub, readonlyOn, latCls, tabErrs, portConflict, concLevel,
+        isDirty, save, previewJson,
+        ctxShow, ctxX, ctxY, ctxOptions, openCtx, onCtxSelect,
+        showRename, renameValue, renameErr, doRename, duplicateProfile,
+        logs, paused, logBox, pushLog, connect, disconnect, onSysProxy,
+        testing, testLines, runTest,
+        tplOn, applyTpl, addListen, addHop, moveHop,
+        switchProfile, createProfile,
+        dragId, overIndex, onDragOver, onDragLeave, onDragEnd, onDrop,
+        showImport, importText, importErr, importPreview, openImport, doImport,
+        showSettings, applyTheme, saveSettings, toggleTheme,
+        showSens, sensTitle, sensBody, sensDanger, sensConfirm, doSens,
+        showExit, confirmExit, exitMinimize, exitStop,
+        toast,
+      };
+    },
+  };
+
+  const app = createApp(Outer);
+  app.use(N);
+  app.config.errorHandler = (e) => { console.error("[mockup]", e); };
+  app.mount("#app");
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NaiveGUI",
+  "version": "0.1.0",
+  "identifier": "com.naive-gui.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "NaïveProxy 客户端",
+        "width": 960,
+        "height": 640,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "resources/bin/naive.exe": "naive.exe",
+      "resources/bin/portable": "portable"
+    }
+  }
+}
