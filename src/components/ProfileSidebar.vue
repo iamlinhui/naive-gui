@@ -16,29 +16,20 @@ const dotClass = computed(() => {
   return runtimeStore.phase === "running" ? "green" : runtimeStore.phase === "starting" ? "yellow" : "red";
 });
 
-/* ── 连接状态条(配置列表上方):状态点 + 文字 + 延迟徽章 ──
-   延迟徽章从底部状态栏挪到这里(UI_SPEC §3):与列表同视野,看谁在跑时顺带看到耗时。
-   徽章靠 .show(visibility)控制显隐,不清 DOM 避免布局跳动;断开时 lastReport
-   已在 runtimeStore 置空(applyState),徽章随之消失,不留陈旧值。 */
-const statusText = computed(() => {
-  switch (runtimeStore.phase) {
-    case "idle": return "未连接";
-    case "starting": return "连接中…";
-    case "running": return "运行中";
-    case "stopping": return "停止中…";
-    case "failed": return "连接失败";
-  }
-});
-const statusCls = computed(() =>
-  runtimeStore.phase === "running" ? "on" :
-  runtimeStore.phase === "starting" || runtimeStore.phase === "stopping" ? "busy" :
-  runtimeStore.phase === "failed" ? "err" : "",
-);
+/* ── 延迟徽章:显示在服务器配置列表的条目内(运行中的档案条目右侧)──
+   连通性测试只对正在运行的档案可跑(naive 只在其监听端口上跑),所以 lastReport
+   对应 activeProfileId,徽章就挂在它的条目上。靠 .show(visibility)控制显隐,
+   不增删 DOM 避免布局跳动;断开时 lastReport 已在 runtimeStore 置空(applyState),
+   徽章随之消失,不留陈旧值。 */
 const latency = computed(() => {
   const r = runtimeStore.lastReport;
   if (r?.l2?.result === "ok") return r.l2.latencyMs;
   return null;
 });
+/** 某档案条目是否显示徽章:运行中的那个 + 有测试耗时 */
+function showLatency(id: string) {
+  return latency.value !== null && runtimeStore.activeProfileId === id;
+}
 /** 配色阈值与 mockup.html 的 latCls 同源:<200 good / <400 mid / 其余 bad */
 const latCls = computed(() => {
   const v = latency.value;
@@ -223,12 +214,6 @@ function doRename() {
 <template>
   <aside class="sidebar">
     <div class="sidebar-head">配置档案 <span class="drag-tip">拖动排序 · 右键更多</span></div>
-    <!-- 连接状态条:列表上方,状态点 + 文字 + 延迟徽章(UI_SPEC §3) -->
-    <div class="sidebar-status" :class="statusCls">
-      <span class="ss-dot"></span>
-      <span class="ss-text">{{ statusText }}</span>
-      <span class="latency" :class="[latCls, latency !== null ? 'show' : '']">{{ latency }} ms</span>
-    </div>
     <div class="profile-list">
       <div
         v-for="(p, i) in profilesStore.profiles"
@@ -256,6 +241,8 @@ function doRename() {
             <div class="pname">{{ p.name }}</div>
             <div class="phost">{{ p.server[0]?.host || "未设置服务器" }}</div>
           </div>
+          <!-- 延迟徽章:挂在运行中的档案条目上(见 script 区 showLatency) -->
+          <span class="latency" :class="[latCls, showLatency(p.id) ? 'show' : '']">{{ latency }} ms</span>
         </div>
       </div>
 
@@ -316,17 +303,7 @@ function doRename() {
 .sidebar-head { padding: 12px 14px 6px; font-size: 11px; color: var(--text-faint); letter-spacing: .5px;
   display: flex; justify-content: space-between; align-items: baseline; }
 .drag-tip { font-size: 10px; opacity: .7; }
-/* ── 连接状态条(列表上方)── */
-.sidebar-status { display: flex; align-items: center; gap: 8px; padding: 7px 14px;
-  border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-dim); }
-.ss-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
-.ss-text { flex: 1; }
-.sidebar-status.on .ss-dot { background: var(--green); box-shadow: 0 0 8px var(--green-glow); }
-.sidebar-status.on .ss-text { color: var(--green); font-weight: 600; }
-.sidebar-status.busy .ss-dot { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
-.sidebar-status.err .ss-dot { background: var(--red); }
-.sidebar-status.err .ss-text { color: var(--red); }
-/* 延迟徽章:visibility 切换而非 DOM 增删,避免布局跳动(与原型 latCls 同阈值) */
+/* 延迟徽章:挂在列表条目内(visibility 切换而非 DOM 增删,避免布局跳动;与原型 latCls 同阈值) */
 .latency { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
   visibility: hidden; flex-shrink: 0; }
 .latency.show { visibility: visible; }
