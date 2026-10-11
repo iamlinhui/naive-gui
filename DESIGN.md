@@ -286,8 +286,10 @@ interface AppSettings {
 ### 6.1 文件布局(§2.2 D11:双模式)
 
 ```
-{dataRoot}/                            # 便携模式:<程序目录>/data
+{dataRoot}/                            # 便携模式:Windows/Linux <程序目录>/data
+                                       #           macOS <NaiveGUI.app 同级>/data
                                        # 标准模式:Windows %APPDATA%/com.naive-gui.app
+                                       #           macOS ~/Library/Application Support/com.naive-gui.app
   settings.json                        # AppSettings(原子写)
   profiles.json                        # Profile[](原子写:temp + rename)
   runtime/<profileId>/config.json      # 每次连接重写(§2.2 D9)
@@ -296,9 +298,9 @@ interface AppSettings {
   logs/app.log                         # GUI 自身日志(tauri-plugin-log,滚动)
 ```
 
-- **便携判定**:exe 同目录存在 `portable` 标记文件(打包版经 `bundle.resources` 默认携带,开发模式无标记);
-- **回退**:标记存在但程序目录不可写(如装进 Program Files)→ 自动退回系统目录;
-- **迁移**:首次以便携模式启动时,把系统目录既有的 `profiles.json`/`settings.json`/`sysproxy.snapshot.json` 拷贝进 `<程序目录>/data`(只补不覆盖,来回切换不丢数据)。
+- **便携判定**:exe 同目录存在 `portable` 标记文件(打包版经 `bundle.resources` 默认携带,开发模式无标记;macOS 标记位于 `NaiveGUI.app/Contents/Resources/`,数据目录取 .app 同级以保持「文件夹便携」语义);
+- **回退**:标记存在但程序目录不可写(如装进 Program Files、挂载只读 DMG)→ 自动退回系统目录;
+- **迁移**:首次以便携模式启动时,把系统目录既有的 `profiles.json`/`settings.json`/`sysproxy.snapshot.json` 拷贝进便携数据根(只补不覆盖,来回切换不丢数据)。
 
 ### 6.2 原子写
 
@@ -523,6 +525,7 @@ App.vue
 ```
 naive-gui/
 ├── DESIGN.md                     # 本文档
+├── README.md                     # 项目说明(环境/开发/打包/便携模式/CI)
 ├── .github/workflows/            # GitHub Actions:test(单测)+ release(手动发布构建)
 ├── package.json / vite.config.ts / tsconfig.json
 ├── src/                          # Vue 前端

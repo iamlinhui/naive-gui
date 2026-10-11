@@ -1,9 +1,16 @@
-# 手动触发 → 输入版本号 → 构建 NSIS 安装包 + 便携 zip → 发布 GitHub Release
+# 手动触发 → 输入版本号 → 构建 Windows/macOS 安装包与便携包 → 发布 GitHub Release
 #
 # 用法:Actions 页面 → Release Build → Run workflow → 填版本号(如 0.1.0)
 # 产物命名(版本号来自输入,构建时覆盖 tauri.conf.json 的 version):
-#   naive-gui-<version>-windows-setup.exe    NSIS 安装包
-#   naive-gui-<version>-windows-portable.zip 便携包(解压即用,配置随文件夹走)
+#   naive-gui-<version>-windows-setup.exe        NSIS 安装包
+#   naive-gui-<version>-windows-portable.zip     Windows 便携包(解压即用)
+#   naive-gui-<version>-macos-x64.dmg            macOS 安装镜像(Intel)
+#   naive-gui-<version>-macos-x64-portable.zip   macOS 便携 .app(Intel)
+#   naive-gui-<version>-macos-arm64.dmg          macOS 安装镜像(Apple Silicon)
+#   naive-gui-<version>-macos-arm64-portable.zip macOS 便携 .app(Apple Silicon)
+#
+# macOS 产物为**未签名**构建(无 Apple 开发者证书):首次打开需右键 → 打开,
+# 或 xattr -cr /Applications/NaiveGUI.app 后打开。
 #
 # naive 内核按 NAIVE_VERSION 钉住,从 GitHub Releases 下载
 # (src-tauri/resources/bin/naive.exe 已 gitignore,不入库)。
@@ -72,13 +79,22 @@ jobs:
 
       # NSIS 安装包:--config 用输入的版本号覆盖 tauri.conf.json 的 version,
       # 安装包文件名(NaiveGUI_<version>_x64-setup.exe)与内嵌版本随之对齐;
-      # beforeBuildCommand 会自动先跑 pnpm build 嵌入前端
+      # beforeBuildCommand 会自动先跑 pnpm build 嵌入前端。
+      # 注意:内联 JSON 的引号会被 pnpm 脚本经 cmd 转发时吃掉
+      # (报错 invalid value '{version:0.1.0}'),因此写临时 JSON 文件,
+      # 用 --config <文件路径> 走深合并 —— 路径是单 token,任何 shell 转发都不破坏。
       - name: Build NSIS installer
         shell: pwsh
         env:
           VERSION: ${{ github.event.inputs.version }}
         run: |
-          pnpm tauri build --config ('{"version":"' + $env:VERSION + '"}')
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "版本号格式非法(应为 x.y.z):$env:VERSION"
+          }
+          $cfg = '{"version":"' + $env:VERSION + '"}'
+          $cfgPath = "$env:RUNNER_TEMP\tauri-config.json"
+          Set-Content -Path $cfgPath -Value $cfg -Encoding ascii
+          pnpm tauri build --config $cfgPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # 便携 zip:程序 + 内核 + 标记 = 安装目录三件套,解压即用
@@ -101,10 +117,92 @@ jobs:
             naive-gui-portable.zip
           if-no-files-found: error
 
+  # ============== macOS 构建(x64 + arm64 交叉编译,dmg + 便携 zip)==============
+  # GitHub 托管的 mac runner 为 x64(macos-latest);arm64 经 --target 交叉编译。
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-apple-darwin
+            naive_asset: mac-x64-x64
+          - arch: arm64
+            target: aarch64-apple-darwin
+            naive_asset: mac-arm64-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # mac 内核:按架构下载 tar.xz,统一命名为 naive.exe(资源映射的单一文件名),
+      # 补执行位(资源拷贝进 .app 时可能丢失,后端 PermissionDenied 也会兜底重试)
+      - name: Download naive kernel (${{ matrix.arch }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/resources/bin /tmp/naiveproxydl
+          curl -fL -o /tmp/naive.tar.xz \
+            "https://github.com/klzgrad/naiveproxy/releases/download/${NAIVE_VERSION}/naiveproxy-${NAIVE_VERSION}-${{ matrix.naive_asset }}.tar.xz"
+          tar -xJf /tmp/naive.tar.xz -C /tmp/naiveproxydl
+          NAIVE_BIN=$(find /tmp/naiveproxydl -type f -name naive | head -1)
+          [ -n "$NAIVE_BIN" ] || { echo "解压后未找到 naive"; exit 1; }
+          cp "$NAIVE_BIN" src-tauri/resources/bin/naive.exe
+          chmod +x src-tauri/resources/bin/naive.exe
+          # portable 标记:通常已入库,这里防御性补齐
+          touch src-tauri/resources/bin/portable
+          ls -lh src-tauri/resources/bin/
+
+      # dmg + .app:--config 用输入的版本号覆盖 tauri.conf.json 的 version;
+      # tauri-bundler 未配置签名证书时默认 ad-hoc 签名(仍会被 Gatekeeper 警告)
+      - name: Build macOS app + dmg
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          printf '{"version":"%s"}' "$VERSION" > /tmp/tauri-config.json
+          pnpm tauri build --target ${{ matrix.target }} --config /tmp/tauri-config.json
+
+      # 便携 zip:.app 本身已含内核与 portable 标记(resources 打进 .app 内),
+      # 数据目录首次运行创建在 .app 同级 data/,整个文件夹拷走即用
+      - name: Pack portable zip
+        run: |
+          cd "src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          ditto -c -k --sequesterRsrc --keepParent "NaiveGUI.app" "naive-gui-${{ matrix.arch }}-portable.zip"
+          ls -lh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*-portable.zip
+          if-no-files-found: error
+
   # ============== 发布 Release ==============
   release:
     needs:
       - build-windows
+      - build-macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,8 +218,15 @@ jobs:
           mkdir -p release
           VERSION=${{ github.event.inputs.version }}
 
+          # Windows
           cp artifacts/windows/*-setup.exe release/naive-gui-${VERSION}-windows-setup.exe
           cp artifacts/windows/naive-gui-portable.zip release/naive-gui-${VERSION}-windows-portable.zip
+
+          # macOS(Intel / Apple Silicon)
+          cp artifacts/macos-x64/*.dmg release/naive-gui-${VERSION}-macos-x64.dmg
+          cp artifacts/macos-x64/*-portable.zip release/naive-gui-${VERSION}-macos-x64-portable.zip
+          cp artifacts/macos-arm64/*.dmg release/naive-gui-${VERSION}-macos-arm64.dmg
+          cp artifacts/macos-arm64/*-portable.zip release/naive-gui-${VERSION}-macos-arm64-portable.zip
 
           ls -lh release/
 

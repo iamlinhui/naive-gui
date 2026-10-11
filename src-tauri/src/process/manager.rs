@@ -329,7 +329,17 @@ async fn spawn_runtime(
         cmd.creation_flags(0x0800_0000);
     }
 
-    let mut child: Child = cmd.spawn().map_err(|e| AppError::Spawn(e.to_string()))?;
+    let mut child: Child = match cmd.spawn() {
+        Ok(c) => c,
+        #[cfg(unix)]
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            // macOS 打包拷贝资源可能丢执行位:补 +x 后重试一次
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&ctx.binary, std::fs::Permissions::from_mode(0o755));
+            cmd.spawn().map_err(|e2| AppError::Spawn(e2.to_string()))?
+        }
+        Err(e) => return Err(AppError::Spawn(e.to_string())),
+    };
     let stderr = child.stderr.take().expect("stderr piped");
     let pid = child
         .id()
