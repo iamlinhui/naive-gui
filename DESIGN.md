@@ -523,7 +523,7 @@ App.vue
 ```
 naive-gui/
 ├── DESIGN.md                     # 本文档
-├── .github/workflows/            # GitHub Actions:test(单测)+ build(NSIS 安装包 + 便携 zip)
+├── .github/workflows/            # GitHub Actions:test(单测)+ release(手动发布构建)
 ├── package.json / vite.config.ts / tsconfig.json
 ├── src/                          # Vue 前端
 │   ├── components/
