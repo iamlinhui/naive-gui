@@ -34,22 +34,26 @@ async function detect() {
   detecting.value = false;
 }
 
-/** 当前生效的二进制来源说明(§5.4:显式路径 → 程序同目录自动发现) */
+/** 当前生效内核的一行说明(§5.4:显式路径 → 程序同目录自动发现)。
+    文案不写死文件名 —— Windows 是 naive.exe,macOS/Linux 是 naive,
+    统一以「内核」通称,具体文件由后端按平台解析。 */
 const binLine = computed(() => {
   if (settingsStore.naiveBinarySource === "bundled") {
-    return `✓ 自动使用程序同目录的 naive.exe${settingsStore.naiveVersion ? `(v${settingsStore.naiveVersion})` : ""}`;
+    return settingsStore.naiveVersion
+      ? `✓ 内核 v${settingsStore.naiveVersion}(程序自带)`
+      : "✓ 程序自带内核";
   }
   if (settingsStore.naiveBinarySource === "explicit") {
-    return `✓ 使用指定路径:${settingsStore.naiveBinary}`;
+    return `✓ 内核:${settingsStore.naiveBinary}`;
   }
-  return "⚠ 未找到 naive.exe:请放到程序目录(打包时自动带上),或在上方指定路径";
+  return "⚠ 未找到内核:放程序目录,或在上方指定路径";
 });
 
-/** 数据目录说明(§6.4:便携标记 → <程序目录>/data,否则系统目录) */
+/** 数据目录一行说明(§6.4):便携 = 随文件夹走,否则系统目录 */
 const dataLine = computed(() => {
   const d = settingsStore.dataDir;
-  if (!d) return "数据目录:未知";
-  return `数据目录:${d.path}${d.portable ? "(便携 · 随文件夹走)" : "(系统目录)"}`;
+  if (!d) return "";
+  return `数据:${d.path}${d.portable ? "(便携)" : "(系统)"}`;
 });
 
 async function save() {
@@ -67,7 +71,7 @@ async function save() {
       <n-form label-placement="left" label-width="130">
         <n-form-item label="naive 路径">
           <n-space :wrap="false" style="width: 100%">
-            <n-input v-model:value="browsePath" placeholder="留空 = 自动使用程序同目录的 naive.exe" style="flex: 1" />
+            <n-input v-model:value="browsePath" placeholder="留空 = 自动用程序同目录内核" style="flex: 1" />
             <n-button :loading="detecting" @click="detect">检测</n-button>
           </n-space>
         </n-form-item>

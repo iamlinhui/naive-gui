@@ -43,7 +43,7 @@ tauri-build 在编译期校验打包资源,所以**先放 naive 内核**:
    pnpm tauri dev
    ```
 
-开发模式下程序在 `src-tauri/target/debug/` 找 naive.exe:要么把 naive.exe 也拷一份到该目录,要么在应用内 ⚙ 设置里手动指定路径(路径留空 = 自动使用程序同目录的 naive.exe)。
+开发模式下程序在 `src-tauri/target/debug/` 找内核(Windows 为 naive.exe,macOS/Linux 为 naive):要么把内核也拷一份到该目录,要么在应用内 ⚙ 设置里手动指定路径(路径留空 = 自动用程序同目录内核)。
 
 ## 本地打包
 

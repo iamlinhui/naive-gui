@@ -51,7 +51,7 @@ const subText = computed(() => {
   }
   if (runtimeStore.phase === "failed") return runtimeStore.stopReason || "详见诊断日志";
   const v = settingsStore.naiveVersion;
-  return v ? `naive v${v} · 配置就绪` : settingsStore.naiveBinary ? "naive 版本未知" : "未找到 naive.exe(程序目录/设置路径)";
+  return v ? `naive v${v} · 配置就绪` : settingsStore.naiveBinary ? "内核版本未知" : "未找到内核(程序目录/设置路径)";
 });
 
 const sysProxyOn = computed(() => !!settingsStore.sysproxy?.enable);
