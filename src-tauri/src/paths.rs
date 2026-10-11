@@ -45,25 +45,24 @@ pub fn portable_mode(app: &tauri::AppHandle) -> bool {
 
 /// 便携数据根:Windows/Linux = <exe>/data;macOS = <NaiveGUI.app 同级>/data。
 /// 能创建(可写)才算数,否则调用方退回系统目录。
-#[cfg(not(target_os = "macos"))]
+///
+/// 平台差异用 `cfg!`(运行时判定)而非 `#[cfg]`(编译期裁剪):
+/// 两个分支在任意主机都会被编译/借用检查 —— 教训:macOS 专属分支
+/// 曾因 #[cfg(target_os = "macos")] 在 Windows 上从不编译,E0716 借用错误
+/// 直到 CI 的 mac 任务才暴露。
 fn portable_root(app: &tauri::AppHandle) -> Option<PathBuf> {
     if !portable_mode(app) {
         return None;
     }
-    let root = exe_dir()?.join("data");
-    std::fs::create_dir_all(&root).ok()?;
-    Some(root)
-}
-
-#[cfg(target_os = "macos")]
-fn portable_root(app: &tauri::AppHandle) -> Option<PathBuf> {
-    if !portable_mode(app) {
-        return None;
-    }
-    // exe 位于 NaiveGUI.app/Contents/MacOS/:数据放 .app 同级的 data/,
-    // 与「文件夹便携」语义一致(拷走整个文件夹 = .app + data)
-    let app_bundle = exe_dir()?.parent()?.parent()?; // -> NaiveGUI.app
-    let root = app_bundle.parent()?.join("data"); // -> <文件夹>/data
+    let exe = exe_dir()?; // 先绑定所有权,借用链才安全
+    let root = if cfg!(target_os = "macos") {
+        // macOS:exe 位于 NaiveGUI.app/Contents/MacOS/,数据放 .app 同级的 data/,
+        // 与「文件夹便携」语义一致(拷走整个文件夹 = .app + data)
+        let app_bundle = exe.parent()?.parent()?; // -> NaiveGUI.app
+        app_bundle.parent()?.join("data") // -> <文件夹>/data
+    } else {
+        exe.join("data")
+    };
     std::fs::create_dir_all(&root).ok()?;
     Some(root)
 }
@@ -99,16 +98,10 @@ pub fn maybe_migrate_from_appdata(app: &tauri::AppHandle) {
 }
 
 /// 内核候选文件名:打包资源统一叫 naive.exe(跨平台单一资源名,见 tauri.conf.json);
-/// 非 Windows 额外探测裸名 `naive`,兼容手工放置的内核。
+/// 额外探测裸名 `naive`,兼容手工放置的内核。不做平台裁剪:多探测一个
+/// 不存在的文件名只是极低成本的存在性检查,却能保持这段代码全平台可编译验证。
 fn naive_bin_candidates() -> Vec<&'static str> {
-    #[cfg(windows)]
-    {
-        vec!["naive.exe"]
-    }
-    #[cfg(not(windows))]
-    {
-        vec!["naive.exe", "naive"]
-    }
+    vec!["naive.exe", "naive"]
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
