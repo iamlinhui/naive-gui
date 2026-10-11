@@ -30,6 +30,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # tauri-build 在编译期(含 cargo test 的 debug 构建)会校验 bundle.resources
+      # 的文件存在;测试任务不下载真内核,放 0 字节占位文件让编译通过
+      # (release.yml 会下载真 naive.exe 并覆盖此文件)
+      - name: naive.exe placeholder (for cargo test)
+        shell: pwsh
+        run: |
+          $binDir = "src-tauri\resources\bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          if (-not (Test-Path "$binDir\naive.exe")) {
+            New-Item -ItemType File -Path "$binDir\naive.exe" | Out-Null
+          }
+
       - name: Frontend tests (vitest)
         run: pnpm test
 
