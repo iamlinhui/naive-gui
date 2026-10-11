@@ -785,7 +785,7 @@
          默认数据刻意让三者互不冲突,以保证「连接」成功路径可直接演示;
          把监听端口手改成 3080 即可复现与「服务器 B」的冲突警告(§5)。 */
       const profiles = reactive([
-        { id: "demo", name: "demo", host: "example.com", port: 443, listenPort: 1080, lat: 168 },
+        { id: "demo", name: "示例节点", host: "example.com", port: 443, listenPort: 1080, lat: 168 },
         { id: "srvb", name: "服务器 B", host: "b.example.com", port: 443, listenPort: 3080, lat: 412 },
         { id: "test", name: "测试节点", host: "", port: 443, listenPort: 8080, lat: 0 },
       ]);
@@ -793,7 +793,7 @@
       const currentName = computed(() => (profiles.find((p) => p.id === current.value) || {}).name || "");
 
       /* ── 可编辑配置 ── */
-      const server = reactive({ scheme: "https", host: "example.com", port: 443, user: "admin", pass: "REDACTED" });
+      const server = reactive({ scheme: "https", host: "example.com", port: 443, user: "user", pass: "password" });
       const chainOpen = ref(false);
       const hops = reactive([{ scheme: "https", host: "relay.example.com", port: 443 }]);
       const listen = reactive([{ proto: "socks", addr: "127.0.0.1", port: 1080 }]);
